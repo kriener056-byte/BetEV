@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchFeatured, type FeaturedPick } from "../services/ev/featured";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
-import { americanToDecimal, formatEV } from "../services/ev/math";
+import { americanToDecimal, formatEV, kellyFraction } from "../services/ev/math";
 
 type LeagueFilter = "all" | "nfl" | "ncaaf";
 type KindFilter = "all" | "ml" | "spread" | "total" | "prop";
@@ -15,7 +15,7 @@ function fmtOdds(odds: number, format: "american" | "decimal") {
 
 export default function Home() {
   const addLeg = useParlay((s) => s.addLeg);
-  const { oddsFormat } = useSettings();
+  const { oddsFormat, bankroll, kelly, setBankroll, setKelly } = useSettings();
 
   const { data, isLoading, isError, isFetching, dataUpdatedAt, refetch } = useQuery<FeaturedPick[]>({
     queryKey: ["featured-ev"],
@@ -35,7 +35,7 @@ export default function Home() {
   // --- Filters ---
   const [league, setLeague] = useState<LeagueFilter>("all");
   const [kind, setKind] = useState<KindFilter>("all");
-  const [position, setPosition] = useState<Position>("all"); // only for props
+  const [position, setPosition] = useState<Position>("all");
   const [propQuery, setPropQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -47,9 +47,7 @@ export default function Home() {
       if (position !== "all") {
         rows = rows.filter((r) => r.kind !== "prop" ? true : (r.propName ?? "").toLowerCase().includes(position.toLowerCase()));
       }
-      if (q) {
-        rows = rows.filter((r) => (r.propName ?? r.label).toLowerCase().includes(q));
-      }
+      if (q) rows = rows.filter((r) => (r.propName ?? r.label).toLowerCase().includes(q));
     }
     return rows;
   }, [data, league, kind, position, propQuery]);
@@ -76,15 +74,11 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="mt-4 grid gap-3 sm:grid-cols-4">
+      {/* Filters + Bankroll/Kelly */}
+      <div className="mt-4 grid gap-3 sm:grid-cols-6">
         <div>
           <label className="text-xs text-slate-500">League</label>
-          <select
-            value={league}
-            onChange={(e) => setLeague(e.target.value as LeagueFilter)}
-            className="mt-1 w-full rounded-md border px-2 py-1 text-sm"
-          >
+          <select value={league} onChange={(e) => setLeague(e.target.value as LeagueFilter)} className="mt-1 w-full rounded-md border px-2 py-1 text-sm">
             <option value="all">All</option>
             <option value="nfl">NFL</option>
             <option value="ncaaf">NCAA Football</option>
@@ -93,11 +87,7 @@ export default function Home() {
 
         <div>
           <label className="text-xs text-slate-500">Type</label>
-          <select
-            value={kind}
-            onChange={(e) => setKind(e.target.value as KindFilter)}
-            className="mt-1 w-full rounded-md border px-2 py-1 text-sm"
-          >
+          <select value={kind} onChange={(e) => setKind(e.target.value as KindFilter)} className="mt-1 w-full rounded-md border px-2 py-1 text-sm">
             <option value="all">All</option>
             <option value="ml">Moneyline</option>
             <option value="spread">Spread</option>
@@ -108,31 +98,30 @@ export default function Home() {
 
         <div>
           <label className="text-xs text-slate-500">Position (props)</label>
-          <select
-            value={position}
-            onChange={(e) => setPosition(e.target.value as Position)}
-            disabled={kind !== "prop"}
-            className="mt-1 w-full rounded-md border px-2 py-1 text-sm disabled:opacity-50"
-          >
-            <option value="all">All</option>
-            <option value="QB">QB</option>
-            <option value="RB">RB</option>
-            <option value="WR">WR</option>
-            <option value="TE">TE</option>
-            <option value="K">K</option>
-            <option value="DEF">DEF</option>
+          <select value={position} onChange={(e) => setPosition(e.target.value as Position)} disabled={kind !== "prop"} className="mt-1 w-full rounded-md border px-2 py-1 text-sm disabled:opacity-50">
+            <option value="all">All</option><option value="QB">QB</option><option value="RB">RB</option><option value="WR">WR</option><option value="TE">TE</option><option value="K">K</option><option value="DEF">DEF</option>
           </select>
         </div>
 
         <div>
           <label className="text-xs text-slate-500">Prop search</label>
-          <input
-            value={propQuery}
-            onChange={(e) => setPropQuery(e.target.value)}
-            disabled={kind !== "prop"}
-            placeholder="Player / prop text"
-            className="mt-1 w-full rounded-md border px-2 py-1 text-sm disabled:opacity-50"
-          />
+          <input value={propQuery} onChange={(e) => setPropQuery(e.target.value)} disabled={kind !== "prop"} placeholder="Player / prop text" className="mt-1 w-full rounded-md border px-2 py-1 text-sm disabled:opacity-50"/>
+        </div>
+
+        <div>
+          <label className="text-xs text-slate-500">Bankroll ($)</label>
+          <input type="number" min={50} step={50} value={bankroll} onChange={(e) => setBankroll(Number(e.target.value || 0))} className="mt-1 w-full rounded-md border px-2 py-1 text-sm"/>
+        </div>
+
+        <div>
+          <label className="text-xs text-slate-500">Kelly multiplier</label>
+          <select value={String(kelly)} onChange={(e) => setKelly(Number(e.target.value))} className="mt-1 w-full rounded-md border px-2 py-1 text-sm">
+            <option value="1">Full Kelly (1.0)</option>
+            <option value="0.5">Half Kelly (0.5)</option>
+            <option value="0.25">Quarter Kelly (0.25)</option>
+            <option value="0.125">Eighth Kelly (0.125)</option>
+            <option value="0">Off (0)</option>
+          </select>
         </div>
       </div>
 
@@ -143,6 +132,8 @@ export default function Home() {
             <tr>
               <th className="px-3 py-2">EV (per $100)</th>
               <th className="px-3 py-2">Odds</th>
+              <th className="px-3 py-2">Kelly %</th>
+              <th className="px-3 py-2">Stake</th>
               <th className="px-3 py-2">Pick</th>
               <th className="px-3 py-2">Matchup</th>
               <th className="px-3 py-2">Type</th>
@@ -154,12 +145,9 @@ export default function Home() {
               <>
                 {Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-t">
-                    <td className="px-3 py-2"><div className="h-5 w-20 bg-slate-100 animate-pulse rounded" /></td>
-                    <td className="px-3 py-2"><div className="h-5 w-16 bg-slate-100 animate-pulse rounded" /></td>
-                    <td className="px-3 py-2"><div className="h-5 w-40 bg-slate-100 animate-pulse rounded" /></td>
-                    <td className="px-3 py-2"><div className="h-5 w-48 bg-slate-100 animate-pulse rounded" /></td>
-                    <td className="px-3 py-2"><div className="h-5 w-16 bg-slate-100 animate-pulse rounded" /></td>
-                    <td className="px-3 py-2"><div className="h-8 w-20 bg-slate-100 animate-pulse rounded" /></td>
+                    {Array.from({length:8}).map((__, j) => (
+                      <td key={j} className="px-3 py-2"><div className="h-5 w-20 bg-slate-100 animate-pulse rounded" /></td>
+                    ))}
                   </tr>
                 ))}
               </>
@@ -167,29 +155,31 @@ export default function Home() {
 
             {!isLoading && isError && (
               <tr className="border-t">
-                <td colSpan={6} className="px-3 py-6 text-red-600">Couldn’t load featured bets.</td>
+                <td colSpan={8} className="px-3 py-6 text-red-600">Couldn’t load featured bets.</td>
               </tr>
             )}
 
             {!isLoading && !isError && filtered.length === 0 && (
               <tr className="border-t">
-                <td colSpan={6} className="px-3 py-6 text-slate-500">No bets match your filters.</td>
+                <td colSpan={8} className="px-3 py-6 text-slate-500">No bets match your filters.</td>
               </tr>
             )}
 
             {!isLoading && !isError && filtered.map((p) => {
+              const kFull = kellyFraction(p.odds, p.fairProb);       // fraction of bankroll (can be negative)
+              const kAdj = Math.max(0, kFull * kelly);               // apply user multiplier, clamp negatives to 0
+              const stake = Math.round(bankroll * kAdj);
+              const kPct = (kAdj * 100).toFixed(1) + "%";
               const positive = p.ev >= 0;
-              const kindLabel =
-                p.kind === "ml" ? "ML" :
-                p.kind === "spread" ? "Spread" :
-                p.kind === "total" ? "Total" : "Prop";
+
+              const kindLabel = p.kind === "ml" ? "ML" : p.kind === "spread" ? "Spread" : p.kind === "total" ? "Total" : "Prop";
 
               return (
                 <tr key={p.id} className="border-t">
-                  <td className={"px-3 py-2 font-semibold " + (positive ? "text-green-700" : "text-red-700")}>
-                    {formatEV(p.ev)}
-                  </td>
+                  <td className={"px-3 py-2 font-semibold " + (positive ? "text-green-700" : "text-red-700")}>{formatEV(p.ev)}</td>
                   <td className="px-3 py-2">{fmtOdds(p.odds, oddsFormat)}</td>
+                  <td className="px-3 py-2">{kFull <= 0 ? "—" : kPct}</td>
+                  <td className="px-3 py-2">{kFull <= 0 ? "—" : `$${stake}`}</td>
                   <td className="px-3 py-2">{p.label}</td>
                   <td className="px-3 py-2">{p.matchup}</td>
                   <td className="px-3 py-2">{kindLabel}</td>
@@ -209,7 +199,7 @@ export default function Home() {
       </div>
 
       <div className="mt-3 text-xs text-slate-500">
-        EV uses a simple no-vig baseline from each market’s two sides. For real edges, plug in your model’s fair probabilities.
+        Kelly % is computed from a no-vig fair probability. Suggested stake = bankroll × Kelly% × your multiplier.
       </div>
     </section>
   );

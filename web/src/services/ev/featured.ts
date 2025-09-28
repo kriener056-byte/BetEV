@@ -4,17 +4,18 @@ import { americanToImpliedProb, evSingle } from "./math";
 export type FeaturedKind = "ml" | "spread" | "total" | "prop";
 
 export type FeaturedPick = {
-  id: string;          // stable id (also used by parlay)
+  id: string;
   gameId: string;
   league: LeagueId;
-  matchup: string;     // "Away @ Home"
-  label: string;       // "Chiefs ML", "Over 47.5", etc.
-  odds: number;        // American odds for the selection
-  ev: number;          // EV for $100 stake
-  parlayId: string;    // parlay id for addLeg
-  parlayLabel: string; // text shown in parlay list
-  kind: FeaturedKind;  // ml | spread | total | prop
-  propName?: string;   // for props (e.g., "Travis Kelce Receptions")
+  matchup: string;
+  label: string;
+  odds: number;          // American odds
+  ev: number;            // EV for $100
+  fairProb: number;      // no-vig baseline probability (for Kelly)
+  parlayId: string;
+  parlayLabel: string;
+  kind: FeaturedKind;
+  propName?: string;
 };
 
 function pushMoneyline(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
@@ -37,6 +38,7 @@ function pushMoneyline(picks: FeaturedPick[], game: GameDetails, league: LeagueI
     label: `${game.home} ML`,
     odds: ml.homeOdds,
     ev: evSingle(ml.homeOdds, nvH, 100),
+    fairProb: nvH,
     parlayId: `${game.id}:ML:HOME`,
     parlayLabel: `${game.home} ML ${ml.homeOdds}`,
     kind: "ml",
@@ -50,6 +52,7 @@ function pushMoneyline(picks: FeaturedPick[], game: GameDetails, league: LeagueI
     label: `${game.away} ML`,
     odds: ml.awayOdds,
     ev: evSingle(ml.awayOdds, nvA, 100),
+    fairProb: nvA,
     parlayId: `${game.id}:ML:AWAY`,
     parlayLabel: `${game.away} ML ${ml.awayOdds}`,
     kind: "ml",
@@ -76,6 +79,7 @@ function pushSpread(picks: FeaturedPick[], game: GameDetails, league: LeagueId) 
     label: `${game.home} ${sp.home >= 0 ? "+" : ""}${sp.home}`,
     odds: sp.homeOdds,
     ev: evSingle(sp.homeOdds, nvH, 100),
+    fairProb: nvH,
     parlayId: `${game.id}:SPREAD:HOME:${sp.home}`,
     parlayLabel: `${game.home} ${sp.home >= 0 ? "+" : ""}${sp.home} (${sp.homeOdds})`,
     kind: "spread",
@@ -89,6 +93,7 @@ function pushSpread(picks: FeaturedPick[], game: GameDetails, league: LeagueId) 
     label: `${game.away} ${sp.away >= 0 ? "+" : ""}${sp.away}`,
     odds: sp.awayOdds,
     ev: evSingle(sp.awayOdds, nvA, 100),
+    fairProb: nvA,
     parlayId: `${game.id}:SPREAD:AWAY:${sp.away}`,
     parlayLabel: `${game.away} ${sp.away >= 0 ? "+" : ""}${sp.away} (${sp.awayOdds})`,
     kind: "spread",
@@ -115,6 +120,7 @@ function pushTotal(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
     label: `Over ${tot.line}`,
     odds: tot.overOdds,
     ev: evSingle(tot.overOdds, nvO, 100),
+    fairProb: nvO,
     parlayId: `${game.id}:TOTAL:OVER:${tot.line}`,
     parlayLabel: `Over ${tot.line} (${tot.overOdds})`,
     kind: "total",
@@ -128,6 +134,7 @@ function pushTotal(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
     label: `Under ${tot.line}`,
     odds: tot.underOdds,
     ev: evSingle(tot.underOdds, nvU, 100),
+    fairProb: nvU,
     parlayId: `${game.id}:TOTAL:UNDER:${tot.line}`,
     parlayLabel: `Under ${tot.line} (${tot.underOdds})`,
     kind: "total",
@@ -151,6 +158,7 @@ function pushProps(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
       label: `${p.name} Over ${p.line}`,
       odds: p.overOdds,
       ev: evSingle(p.overOdds, nvO, 100),
+      fairProb: nvO,
       parlayId: `${game.id}:PROP:${key}:OVER:${p.line}`,
       parlayLabel: `${p.name} Over ${p.line} (${p.overOdds})`,
       kind: "prop",
@@ -165,6 +173,7 @@ function pushProps(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
       label: `${p.name} Under ${p.line}`,
       odds: p.underOdds,
       ev: evSingle(p.underOdds, nvU, 100),
+      fairProb: nvU,
       parlayId: `${game.id}:PROP:${key}:UNDER:${p.line}`,
       parlayLabel: `${p.name} Under ${p.line} (${p.underOdds})`,
       kind: "prop",
@@ -176,8 +185,6 @@ function pushProps(picks: FeaturedPick[], game: GameDetails, league: LeagueId) {
 export async function fetchFeatured(limit = 25): Promise<FeaturedPick[]> {
   const leagues: LeagueId[] = ["nfl", "ncaaf"];
   const leagueByGame = new Map<string, LeagueId>();
-
-  // list games per league
   const lists = await Promise.all(leagues.map((lg) => fetchGames(lg)));
   lists.forEach((games, i) => {
     const lg = leagues[i];
