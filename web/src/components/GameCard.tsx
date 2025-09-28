@@ -4,27 +4,19 @@ import { useEffect, useState } from "react";
 import { fetchGame, type GameDetails } from "../services/odds/draftkings";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
-import { americanToImpliedProb, evSingle, formatEV, americanToDecimal } from "../services/ev/math";
+import { americanToImpliedProb, evSingle, formatEV, americanToDecimal, kellyFraction } from "../services/ev/math";
 
-type Props = {
-  id: string;
-  home: string;
-  away: string;
-  startsAt: string; // ISO
-};
+type Props = { id: string; home: string; away: string; startsAt: string; };
 
-function signed(n: number) {
-  return `${n >= 0 ? "+" : ""}${n}`;
-}
+function signed(n: number) { return `${n >= 0 ? "+" : ""}${n}`; }
 function fmtOdds(odds: number, format: "american" | "decimal") {
   return format === "american" ? (odds > 0 ? `+${odds}` : `${odds}`) : americanToDecimal(odds).toFixed(2);
 }
 
 export default function GameCard({ id, home, away, startsAt }: Props) {
   const addLeg = useParlay((s) => s.addLeg);
-  const { oddsFormat } = useSettings();
+  const { oddsFormat, bankroll, kelly, maxPerBetMode, maxPerBetPct, maxPerBetUsd } = useSettings();
 
-  // Pull the lines for this game card, auto-refresh every 15s
   const { data, isLoading, isError, isFetching, dataUpdatedAt } = useQuery<GameDetails>({
     queryKey: ["card", id],
     queryFn: () => fetchGame(id),
@@ -32,50 +24,60 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
     refetchOnWindowFocus: false,
   });
 
-  // Tick every second so "Updated Xs ago" counts up live
   const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  const secondsAgo =
-    data ? Math.max(0, Math.floor((now - dataUpdatedAt) / 1000)) : null;
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const secondsAgo = data ? Math.max(0, Math.floor((now - dataUpdatedAt) / 1000)) : null;
 
   const dt = new Date(startsAt);
-  const when = dt.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const when = dt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
   const ml = data?.markets.find((m) => m.type === "moneyline") as
-    | { type: "moneyline"; homeOdds: number; awayOdds: number }
-    | undefined;
-
+    | { type: "moneyline"; homeOdds: number; awayOdds: number } | undefined;
   const sp = data?.markets.find((m) => m.type === "spread") as
-    | { type: "spread"; home: number; away: number; homeOdds: number; awayOdds: number }
-    | undefined;
-
+    | { type: "spread"; home: number; away: number; homeOdds: number; awayOdds: number } | undefined;
   const tot = data?.markets.find((m) => m.type === "total") as
-    | { type: "total"; line: number; overOdds: number; underOdds: number }
-    | undefined;
+    | { type: "total"; line: number; overOdds: number; underOdds: number } | undefined;
 
-  // --- Quick EV pill (no-vig baseline, $100 stake) ---
+  // EV pill from ML
   let evPill: string | null = null;
   let evClass = "bg-slate-100 text-slate-800";
   if (ml) {
-    const impH = americanToImpliedProb(ml.homeOdds);
-    const impA = americanToImpliedProb(ml.awayOdds);
-    const sum = impH + impA;
-    const nvH = impH / sum;
-    const nvA = impA / sum;
-    const evHome = evSingle(ml.homeOdds, nvH, 100);
-    const evAway = evSingle(ml.awayOdds, nvA, 100);
-    const best = Math.max(evHome, evAway);
-    evPill = `EV ${formatEV(best)}`;
-    if (best > 0) evClass = "bg-green-100 text-green-800";
-    else if (best < 0) evClass = "bg-red-100 text-red-800";
+    const impH = americanToImpliedProb(ml.homeOdds), impA = americanToImpliedProb(ml.awayOdds);
+    const sum = impH + impA; const nvH = impH / sum, nvA = impA / sum;
+    const best = Math.max(evSingle(ml.homeOdds, nvH, 100), evSingle(ml.awayOdds, nvA, 100));
+    evPill = `EV ${formatEV(best)}`; if (best > 0) evClass = "bg-green-100 text-green-800"; else if (best < 0) evClass = "bg-red-100 text-red-800";
+  }
+
+  const capDollar = Math.round(maxPerBetMode === "pct" ? bankroll * maxPerBetPct : maxPerBetUsd);
+  const capStake = (stake: number) => Math.min(stake, capDollar);
+  const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+
+  // Kelly numbers
+  let kH = 0, kA = 0, sH = 0, sA = 0;
+  if (ml) {
+    const impH = americanToImpliedProb(ml.homeOdds), impA = americanToImpliedProb(ml.awayOdds);
+    const sum = Math.max(impH + impA, 1e-9), nvH = impH / sum, nvA = impA / sum;
+    const fH = kellyFraction(ml.homeOdds, nvH), fA = kellyFraction(ml.awayOdds, nvA);
+    kH = Math.max(0, fH * kelly); kA = Math.max(0, fA * kelly);
+    sH = capStake(Math.round(bankroll * kH)); sA = capStake(Math.round(bankroll * kA));
+  }
+
+  let kSpH = 0, kSpA = 0, sSpH = 0, sSpA = 0;
+  if (sp) {
+    const impH = americanToImpliedProb(sp.homeOdds), impA = americanToImpliedProb(sp.awayOdds);
+    const sum = Math.max(impH + impA, 1e-9), nvH = impH / sum, nvA = impA / sum;
+    const fH = kellyFraction(sp.homeOdds, nvH), fA = kellyFraction(sp.awayOdds, nvA);
+    kSpH = Math.max(0, fH * kelly); kSpA = Math.max(0, fA * kelly);
+    sSpH = capStake(Math.round(bankroll * kSpH)); sSpA = capStake(Math.round(bankroll * kSpA));
+  }
+
+  let kTO = 0, kTU = 0, sTO = 0, sTU = 0;
+  if (tot) {
+    const impO = americanToImpliedProb(tot.overOdds), impU = americanToImpliedProb(tot.underOdds);
+    const sum = Math.max(impO + impU, 1e-9), nvO = impO / sum, nvU = impU / sum;
+    const fO = kellyFraction(tot.overOdds, nvO), fU = kellyFraction(tot.underOdds, nvU);
+    kTO = Math.max(0, fO * kelly); kTU = Math.max(0, fU * kelly);
+    sTO = capStake(Math.round(bankroll * kTO)); sTU = capStake(Math.round(bankroll * kTU));
   }
 
   return (
@@ -83,36 +85,16 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
       <div className="flex items-start justify-between gap-2">
         <div>
           <div className="text-sm text-slate-500">{when}</div>
-          <div className="mt-1 text-lg font-semibold">
-            {away} @ {home}
-          </div>
+          <div className="mt-1 text-lg font-semibold">{away} @ {home}</div>
         </div>
         <div className="flex items-center gap-2">
-          {isLoading ? (
-            <span className="h-6 w-16 rounded bg-slate-100 animate-pulse" />
-          ) : (
-            evPill && (
-              <span className={`rounded-md px-2 py-1 text-xs font-medium ${evClass}`}>
-                {evPill}
-              </span>
-            )
-          )}
-          {secondsAgo !== null && (
-            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-700">
-              {isFetching ? "Refreshing…" : `Updated ${secondsAgo}s ago`}
-            </span>
-          )}
-          <Link
-            to={`/game/${id}`}
-            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-          >
-            View
-          </Link>
+          {isLoading ? <span className="h-6 w-16 rounded bg-slate-100 animate-pulse" /> : (evPill && <span className={`rounded-md px-2 py-1 text-xs font-medium ${evClass}`}>{evPill}</span>)}
+          {secondsAgo !== null && (<span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-700">{isFetching ? "Refreshing…" : `Updated ${secondsAgo}s ago`}</span>)}
+          <Link to={`/game/${id}`} className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800">View</Link>
         </div>
       </div>
 
-      {/* Lines */}
-      <div className="mt-3 space-y-2">
+      <div className="mt-3 space-y-3">
         {/* Moneyline */}
         <div className="flex items-center gap-2">
           <div className="w-16 text-xs font-semibold text-slate-500">ML</div>
@@ -120,30 +102,10 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
           {isError && <div className="text-xs text-red-600">lines unavailable</div>}
           {ml && !isLoading && !isError && (
             <>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:ML:AWAY`,
-                    label: `${away} ML ${fmtOdds(ml.awayOdds, oddsFormat)}`,
-                    odds: ml.awayOdds,
-                  })
-                }
-                className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-              >
-                {away} {fmtOdds(ml.awayOdds, oddsFormat)}
-              </button>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:ML:HOME`,
-                    label: `${home} ML ${fmtOdds(ml.homeOdds, oddsFormat)}`,
-                    odds: ml.homeOdds,
-                  })
-                }
-                className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-              >
-                {home} {fmtOdds(ml.homeOdds, oddsFormat)}
-              </button>
+              <button onClick={() => addLeg({ id: `${id}:ML:AWAY`, label: `${away} ML ${fmtOdds(ml.awayOdds, oddsFormat)}`, odds: ml.awayOdds })} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">{away} {fmtOdds(ml.awayOdds, oddsFormat)}</button>
+              <span className="text-[11px] text-slate-600">Kelly {kA>0?`${(kA*100).toFixed(1)}% · $${sA}`:"—"}</span>
+              <button onClick={() => addLeg({ id: `${id}:ML:HOME`, label: `${home} ML ${fmtOdds(ml.homeOdds, oddsFormat)}`, odds: ml.homeOdds })} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">{home} {fmtOdds(ml.homeOdds, oddsFormat)}</button>
+              <span className="text-[11px] text-slate-600">Kelly {kH>0?`${(kH*100).toFixed(1)}% · $${sH}`:"—"}</span>
             </>
           )}
         </div>
@@ -154,30 +116,10 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
           {isLoading && <div className="h-8 flex-1 rounded bg-slate-100 animate-pulse" />}
           {!isLoading && sp && (
             <>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:SPREAD:AWAY:${sp.away}`,
-                    label: `${away} ${signed(sp.away)} (${fmtOdds(sp.awayOdds, oddsFormat)})`,
-                    odds: sp.awayOdds,
-                  })
-                }
-                className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
-              >
-                {away} {signed(sp.away)} ({fmtOdds(sp.awayOdds, oddsFormat)})
-              </button>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:SPREAD:HOME:${sp.home}`,
-                    label: `${home} ${signed(sp.home)} (${fmtOdds(sp.homeOdds, oddsFormat)})`,
-                    odds: sp.homeOdds,
-                  })
-                }
-                className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
-              >
-                {home} {signed(sp.home)} ({fmtOdds(sp.homeOdds, oddsFormat)})
-              </button>
+              <button onClick={() => addLeg({ id: `${id}:SPREAD:AWAY:${sp.away}`, label: `${away} ${signed(sp.away)} (${fmtOdds(sp.awayOdds, oddsFormat)})`, odds: sp.awayOdds })} className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700">{away} {signed(sp.away)} ({fmtOdds(sp.awayOdds, oddsFormat)})</button>
+              <span className="text-[11px] text-slate-600">Kelly {kSpA>0?`${(kSpA*100).toFixed(1)}% · $${sSpA}`:"—"}</span>
+              <button onClick={() => addLeg({ id: `${id}:SPREAD:HOME:${sp.home}`, label: `${home} ${signed(sp.home)} ({fmtOdds(sp.homeOdds, oddsFormat)})`, odds: sp.homeOdds })} className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700">{home} {signed(sp.home)} ({fmtOdds(sp.homeOdds, oddsFormat)})</button>
+              <span className="text-[11px] text-slate-600">Kelly {kSpH>0?`${(kSpH*100).toFixed(1)}% · $${sSpH}`:"—"}</span>
             </>
           )}
           {!isLoading && !sp && <div className="text-xs text-slate-400">—</div>}
@@ -189,30 +131,10 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
           {isLoading && <div className="h-8 flex-1 rounded bg-slate-100 animate-pulse" />}
           {!isLoading && tot && (
             <>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:TOTAL:OVER:${tot.line}`,
-                    label: `Over ${tot.line} (${fmtOdds(tot.overOdds, oddsFormat)})`,
-                    odds: tot.overOdds,
-                  })
-                }
-                className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
-              >
-                Over {tot.line} ({fmtOdds(tot.overOdds, oddsFormat)})
-              </button>
-              <button
-                onClick={() =>
-                  addLeg({
-                    id: `${id}:TOTAL:UNDER:${tot.line}`,
-                    label: `Under ${tot.line} (${fmtOdds(tot.underOdds, oddsFormat)})`,
-                    odds: tot.underOdds,
-                  })
-                }
-                className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
-              >
-                Under {tot.line} ({fmtOdds(tot.underOdds, oddsFormat)})
-              </button>
+              <button onClick={() => addLeg({ id: `${id}:TOTAL:OVER:${tot.line}`, label: `Over ${tot.line} (${fmtOdds(tot.overOdds, oddsFormat)})`, odds: tot.overOdds })} className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700">Over {tot.line} ({fmtOdds(tot.overOdds, oddsFormat)})</button>
+              <span className="text-[11px] text-slate-600">Kelly {kTO>0?`${(kTO*100).toFixed(1)}% · $${sTO}`:"—"}</span>
+              <button onClick={() => addLeg({ id: `${id}:TOTAL:UNDER:${tot.line}`, label: `Under ${tot.line} (${fmtOdds(tot.underOdds, oddsFormat)})`, odds: tot.underOdds })} className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700">Under {tot.line} ({fmtOdds(tot.underOdds, oddsFormat)})</button>
+              <span className="text-[11px] text-slate-600">Kelly {kTU>0?`${(kTU*100).toFixed(1)}% · $${sTU}`:"—"}</span>
             </>
           )}
           {!isLoading && !tot && <div className="text-xs text-slate-400">—</div>}
