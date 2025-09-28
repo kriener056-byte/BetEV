@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import ParlayWidget from "./components/ParlayWidget";
 
 const leagues = [
   { id: "nfl", label: "NFL" },
@@ -43,8 +44,9 @@ export default function App() {
         </nav>
       </aside>
 
-      <main className="p-6 bg-slate-50">
+      <main className="relative p-6 bg-slate-50">
         <Outlet />
+        <ParlayWidget />
       </main>
     </div>
   );

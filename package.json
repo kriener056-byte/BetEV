@@ -1,0 +1,16 @@
+{
+  "name": "betev",
+  "version": "1.0.0",
+  "description": "Bet EV is a sports betting optimization app that helps users find the most valuable parlays across major sportsbooks.   The app scans live odds, calculates expected value (EV), and builds conservative or aggressive parlay recommendations tailored to user risk preferences.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "concurrently -k -n API,WEB -c green,blue \"npm --prefix server run dev\" \"npm --prefix web run dev -- --port 5173\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
