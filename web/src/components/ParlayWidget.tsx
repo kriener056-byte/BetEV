@@ -29,6 +29,13 @@ export default function ParlayWidget() {
     }
   }
 
+  function handleClear() {
+    if (!canCalc) return;
+    if (confirm("Clear all legs from the parlay?")) {
+      clear();
+    }
+  }
+
   return (
     <div className="fixed bottom-4 right-4 w-80 rounded-2xl border bg-white shadow-xl">
       <div className="flex items-center justify-between px-4 py-3 border-b">
@@ -43,7 +50,7 @@ export default function ParlayWidget() {
             Copy
           </button>
           <button
-            onClick={clear}
+            onClick={handleClear}
             className="text-xs rounded-md px-2 py-1 text-white bg-slate-700 hover:bg-slate-800 disabled:opacity-50"
             disabled={!canCalc}
             title="Clear parlay"
