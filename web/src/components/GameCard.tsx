@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { fetchGame, type GameDetails } from "../services/odds/draftkings";
 import { useParlay } from "../store/parlay";
+import { americanToImpliedProb, evSingle, formatEV } from "../services/ev/math";
 
 type Props = {
   id: string;
@@ -17,11 +19,22 @@ function signed(n: number) {
 export default function GameCard({ id, home, away, startsAt }: Props) {
   const addLeg = useParlay((s) => s.addLeg);
 
-  // Pull the lines for this game card
-  const { data, isLoading, isError } = useQuery<GameDetails>({
+  // Pull the lines for this game card, auto-refresh every 15s
+  const { data, isLoading, isError, isFetching, dataUpdatedAt } = useQuery<GameDetails>({
     queryKey: ["card", id],
     queryFn: () => fetchGame(id),
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
   });
+
+  // Tick every second so "Updated Xs ago" counts up live
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const secondsAgo =
+    data ? Math.max(0, Math.floor((now - dataUpdatedAt) / 1000)) : null;
 
   const dt = new Date(startsAt);
   const when = dt.toLocaleString(undefined, {
@@ -43,6 +56,23 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
     | { type: "total"; line: number; overOdds: number; underOdds: number }
     | undefined;
 
+  // --- Quick EV pill (no-vig baseline, $100 stake) ---
+  let evPill: string | null = null;
+  let evClass = "bg-slate-100 text-slate-800";
+  if (ml) {
+    const impH = americanToImpliedProb(ml.homeOdds);
+    const impA = americanToImpliedProb(ml.awayOdds);
+    const sum = impH + impA;
+    const nvH = impH / sum;
+    const nvA = impA / sum;
+    const evHome = evSingle(ml.homeOdds, nvH, 100);
+    const evAway = evSingle(ml.awayOdds, nvA, 100);
+    const best = Math.max(evHome, evAway);
+    evPill = `EV ${formatEV(best)}`;
+    if (best > 0) evClass = "bg-green-100 text-green-800";
+    else if (best < 0) evClass = "bg-red-100 text-red-800";
+  }
+
   return (
     <div className="rounded-xl border bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-2">
@@ -52,12 +82,28 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
             {away} @ {home}
           </div>
         </div>
-        <Link
-          to={`/game/${id}`}
-          className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-        >
-          View
-        </Link>
+        <div className="flex items-center gap-2">
+          {isLoading ? (
+            <span className="h-6 w-16 rounded bg-slate-100 animate-pulse" />
+          ) : (
+            evPill && (
+              <span className={`rounded-md px-2 py-1 text-xs font-medium ${evClass}`}>
+                {evPill}
+              </span>
+            )
+          )}
+          {secondsAgo !== null && (
+            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-700">
+              {isFetching ? "Refreshing…" : `Updated ${secondsAgo}s ago`}
+            </span>
+          )}
+          <Link
+            to={`/game/${id}`}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+          >
+            View
+          </Link>
+        </div>
       </div>
 
       {/* Lines */}
@@ -67,7 +113,7 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
           <div className="w-16 text-xs font-semibold text-slate-500">ML</div>
           {isLoading && <div className="h-8 flex-1 rounded bg-slate-100 animate-pulse" />}
           {isError && <div className="text-xs text-red-600">lines unavailable</div>}
-          {ml && (
+          {ml && !isLoading && !isError && (
             <>
               <button
                 onClick={() =>
@@ -100,7 +146,8 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
         {/* Spread */}
         <div className="flex items-center gap-2">
           <div className="w-16 text-xs font-semibold text-slate-500">Spread</div>
-          {sp ? (
+          {isLoading && <div className="h-8 flex-1 rounded bg-slate-100 animate-pulse" />}
+          {!isLoading && sp && (
             <>
               <button
                 onClick={() =>
@@ -127,15 +174,15 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
                 {home} {signed(sp.home)} ({sp.homeOdds})
               </button>
             </>
-          ) : (
-            <div className="text-xs text-slate-400">—</div>
           )}
+          {!isLoading && !sp && <div className="text-xs text-slate-400">—</div>}
         </div>
 
         {/* Total */}
         <div className="flex items-center gap-2">
           <div className="w-16 text-xs font-semibold text-slate-500">Total</div>
-          {tot ? (
+          {isLoading && <div className="h-8 flex-1 rounded bg-slate-100 animate-pulse" />}
+          {!isLoading && tot && (
             <>
               <button
                 onClick={() =>
@@ -162,9 +209,8 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
                 Under {tot.line} ({tot.underOdds})
               </button>
             </>
-          ) : (
-            <div className="text-xs text-slate-400">—</div>
           )}
+          {!isLoading && !tot && <div className="text-xs text-slate-400">—</div>}
         </div>
       </div>
     </div>
