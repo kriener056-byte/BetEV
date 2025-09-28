@@ -1,0 +1,16 @@
+# root ignores
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# node + builds
+node_modules
+dist
+build
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
