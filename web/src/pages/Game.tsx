@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchGame, type GameDetails } from "../services/odds/draftkings";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
-import { americanToDecimal } from "../services/ev/math";
+import { americanToDecimal, americanToImpliedProb, evSingle, formatEV } from "../services/ev/math";
 
 type ML = { type: "moneyline"; homeOdds: number; awayOdds: number };
 type Spread = { type: "spread"; home: number; away: number; homeOdds: number; awayOdds: number };
@@ -11,6 +11,9 @@ type Total = { type: "total"; line: number; overOdds: number; underOdds: number 
 
 function fmtOdds(odds: number, format: "american" | "decimal") {
   return format === "american" ? (odds > 0 ? `+${odds}` : `${odds}`) : americanToDecimal(odds).toFixed(2);
+}
+function signed(n: number) {
+  return `${n >= 0 ? "+" : ""}${n}`;
 }
 
 export default function Game() {
@@ -36,6 +39,7 @@ export default function Game() {
       </h2>
       <div className="text-slate-500 text-sm">{when}</div>
 
+      {/* Markets */}
       <div className="mt-6 overflow-hidden rounded-xl border bg-white">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50">
@@ -67,7 +71,7 @@ export default function Game() {
                             addLeg({
                               id: `${data.id}:ML:HOME`,
                               label: `${data.home} ML ${fmtOdds((m as ML).homeOdds, oddsFormat)}`,
-                              odds: (m as ML).homeOdds, // keep numeric American for math
+                              odds: (m as ML).homeOdds,
                             })
                           }
                           className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
@@ -94,25 +98,25 @@ export default function Game() {
                           onClick={() =>
                             addLeg({
                               id: `${data.id}:SPREAD:HOME:${(m as Spread).home}`,
-                              label: `${data.home} ${((m as Spread).home >= 0 ? "+" : "") + (m as Spread).home} (${fmtOdds((m as Spread).homeOdds, oddsFormat)})`,
+                              label: `${data.home} ${signed((m as Spread).home)} (${fmtOdds((m as Spread).homeOdds, oddsFormat)})`,
                               odds: (m as Spread).homeOdds,
                             })
                           }
                           className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
                         >
-                          Add {data.home} {((m as Spread).home >= 0 ? "+" : "") + (m as Spread).home}
+                          Add {data.home} {signed((m as Spread).home)}
                         </button>
                         <button
                           onClick={() =>
                             addLeg({
                               id: `${data.id}:SPREAD:AWAY:${(m as Spread).away}`,
-                              label: `${data.away} ${((m as Spread).away >= 0 ? "+" : "") + (m as Spread).away} (${fmtOdds((m as Spread).awayOdds, oddsFormat)})`,
+                              label: `${data.away} ${signed((m as Spread).away)} (${fmtOdds((m as Spread).awayOdds, oddsFormat)})`,
                               odds: (m as Spread).awayOdds,
                             })
                           }
                           className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
                         >
-                          Add {data.away} {((m as Spread).away >= 0 ? "+" : "") + (m as Spread).away}
+                          Add {data.away} {signed((m as Spread).away)}
                         </button>
                       </div>
                     )}
@@ -152,18 +156,63 @@ export default function Game() {
         </table>
       </div>
 
+      {/* Props with EV (+$100, no-vig) and add-to-parlay */}
       <div className="mt-6">
         <h3 className="text-lg font-semibold">Popular Props</h3>
         <div className="mt-2 grid gap-3 sm:grid-cols-2">
-          {data.props.map((p, i) => (
-            <div key={i} className="rounded-xl border bg-white p-4">
-              <div className="text-sm text-slate-500">{p.name}</div>
-              <div className="mt-1 font-semibold">{p.line}</div>
-              <div className="mt-1 text-sm">
-                Over ({fmtOdds(p.overOdds, oddsFormat)}) · Under ({fmtOdds(p.underOdds, oddsFormat)})
+          {data.props.map((p, i) => {
+            // no-vig baseline from Over/Under odds
+            const impOver = americanToImpliedProb(p.overOdds);
+            const impUnder = americanToImpliedProb(p.underOdds);
+            const sum = impOver + impUnder || 1;
+            const nvOver = impOver / sum;
+            const nvUnder = impUnder / sum;
+
+            const evOver = evSingle(p.overOdds, nvOver, 100);
+            const evUnder = evSingle(p.underOdds, nvUnder, 100);
+
+            const overClass = evOver >= 0 ? "text-green-700" : "text-red-700";
+            const underClass = evUnder >= 0 ? "text-green-700" : "text-red-700";
+
+            const key = p.name.replace(/\s+/g, "_");
+
+            return (
+              <div key={i} className="rounded-xl border bg-white p-4">
+                <div className="text-sm text-slate-500">{p.name}</div>
+                <div className="mt-1 font-semibold">{p.line}</div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() =>
+                      addLeg({
+                        id: `${data.id}:PROP:${key}:OVER:${p.line}`,
+                        label: `${p.name} Over ${p.line} (${fmtOdds(p.overOdds, oddsFormat)})`,
+                        odds: p.overOdds,
+                      })
+                    }
+                    className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                  >
+                    Over {p.line} ({fmtOdds(p.overOdds, oddsFormat)})
+                  </button>
+                  <span className={`text-xs ${overClass}`}>EV {formatEV(evOver)}</span>
+
+                  <button
+                    onClick={() =>
+                      addLeg({
+                        id: `${data.id}:PROP:${key}:UNDER:${p.line}`,
+                        label: `${p.name} Under ${p.line} (${fmtOdds(p.underOdds, oddsFormat)})`,
+                        odds: p.underOdds,
+                      })
+                    }
+                    className="rounded-md bg-rose-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-rose-700"
+                  >
+                    Under {p.line} ({fmtOdds(p.underOdds, oddsFormat)})
+                  </button>
+                  <span className={`text-xs ${underClass}`}>EV {formatEV(evUnder)}</span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
