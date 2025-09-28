@@ -1,0 +1,10 @@
+bet-ev/
+│── src/
+│   ├── components/    # UI components
+│   ├── pages/         # Page routes
+│   ├── services/      # API & EV calculation logic
+│   └── utils/         # Helper functions
+│── public/            # Static assets
+│── .env.example       # Example env vars
+│── package.json       # Dependencies & scripts
+│── README.md          # Project documentation  
