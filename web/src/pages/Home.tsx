@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchFeatured, type FeaturedPick } from "../services/ev/featured";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
+import { useRisk } from "../store/risk";
 import { americanToDecimal, formatEV, kellyFraction } from "../services/ev/math";
 
 type LeagueFilter = "all" | "nfl" | "ncaaf";
@@ -25,9 +26,14 @@ export default function Home() {
     maxPerBetMode, maxPerBetPct, maxPerBetUsd,
     setMaxPerBetMode, setMaxPerBetPct, setMaxPerBetUsd,
 
-    dailyMaxMode, dailyMaxPct, dailyMaxUsd,
-    setDailyMaxMode, setDailyMaxPct, setDailyMaxUsd,
+    riskPeriod, setRiskPeriod,
+    periodMode, periodLimitPct, periodLimitUsd,
+    setPeriodMode, setPeriodLimitPct, setPeriodLimitUsd,
   } = useSettings();
+
+  const getConsumed = useRisk((s) => s.getConsumed);
+  const tryConsume = useRisk((s) => s.tryConsume);
+  const resetRisk = useRisk((s) => s.reset);
 
   const { data, isLoading, isError, isFetching, dataUpdatedAt, refetch } = useQuery<FeaturedPick[]>({
     queryKey: ["featured-ev"],
@@ -68,22 +74,22 @@ export default function Home() {
     return rows;
   }, [data, league, kind, position, propQuery]);
 
-  // Resolve caps from mode
-  const capDollar = Math.round(
-    maxPerBetMode === "pct" ? bankroll * maxPerBetPct : maxPerBetUsd
-  );
-  const dailyCapDollar = Math.round(
-    dailyMaxMode === "pct" ? bankroll * dailyMaxPct : dailyMaxUsd
-  );
-  const capPctDisplay = bankroll > 0 ? ((capDollar / bankroll) * 100).toFixed(2) : "0.00";
-  const dailyPctDisplay = bankroll > 0 ? ((dailyCapDollar / bankroll) * 100).toFixed(2) : "0.00";
+  // Caps
+  const perBetCapDollar = Math.round(maxPerBetMode === "pct" ? bankroll * maxPerBetPct : maxPerBetUsd);
+  const periodCapDollar  = Math.round(periodMode === "pct" ? bankroll * periodLimitPct : periodLimitUsd);
 
+  const periodConsumed = getConsumed(riskPeriod);
+  const periodRemaining = Math.max(0, Math.round(periodCapDollar - periodConsumed));
+  const capPctDisplay = bankroll > 0 ? ((perBetCapDollar / bankroll) * 100).toFixed(2) : "0.00";
+  const periodPctDisplay = bankroll > 0 ? ((periodCapDollar / bankroll) * 100).toFixed(2) : "0.00";
+
+  // Build rows with Kelly + stake + per-bet cap
   const rows = useMemo(() => {
     const mapped = (filtered ?? []).map((p) => {
       const f = kellyFraction(p.odds, p.fairProb);
       const kAdj = Math.max(0, f * kelly);
       const stake = Math.round(bankroll * kAdj);
-      const stakeCapped = Math.min(stake, capDollar);
+      const stakeCapped = Math.min(stake, perBetCapDollar);
       return { ...p, kellyFull: f, kellyAdj: kAdj, stake, stakeCapped };
     });
     const cmp = (a: number, b: number) => (sortDir === "asc" ? a - b : b - a);
@@ -91,7 +97,7 @@ export default function Home() {
     else if (sortKey === "kelly") mapped.sort((a, b) => cmp(a.kellyAdj, b.kellyAdj));
     else if (sortKey === "odds") mapped.sort((a, b) => cmp(a.odds, b.odds));
     return mapped;
-  }, [filtered, bankroll, kelly, capDollar, sortKey, sortDir]);
+  }, [filtered, bankroll, kelly, perBetCapDollar, sortKey, sortDir]);
 
   return (
     <section className="mx-auto max-w-5xl">
@@ -159,7 +165,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Row 2: Limits with % / $ toggles */}
+      {/* Row 2: Per-bet cap + Period budget (enforced) */}
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         {/* Max per bet */}
         <div>
@@ -174,61 +180,36 @@ export default function Home() {
               <option value="pct">%</option>
               <option value="usd">$</option>
             </select>
-
             {maxPerBetMode === "pct" ? (
-              <input
-                type="number" min={0} max={100} step={0.25}
-                value={maxPerBetPct * 100}
-                onChange={(e) => setMaxPerBetPct(Number(e.target.value) / 100)}
-                className="w-full rounded-md border px-2 py-1 text-sm"
-              />
+              <input type="number" min={0} max={100} step={0.25} value={maxPerBetPct * 100} onChange={(e) => setMaxPerBetPct(Number(e.target.value) / 100)} className="w-full rounded-md border px-2 py-1 text-sm"/>
             ) : (
-              <input
-                type="number" min={0} step={10}
-                value={maxPerBetUsd}
-                onChange={(e) => setMaxPerBetUsd(Number(e.target.value || 0))}
-                className="w-full rounded-md border px-2 py-1 text-sm"
-              />
+              <input type="number" min={0} step={10} value={maxPerBetUsd} onChange={(e) => setMaxPerBetUsd(Number(e.target.value || 0))} className="w-full rounded-md border px-2 py-1 text-sm"/>
             )}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500">
-            Cap ≈ ${capDollar} ({capPctDisplay}% of bankroll)
-          </div>
+          <div className="mt-1 text-[11px] text-slate-500">Per-bet cap ≈ ${perBetCapDollar} ({capPctDisplay}% of bankroll)</div>
         </div>
 
-        {/* Daily risk limit (display) */}
+        {/* Period budget */}
         <div>
-          <label className="text-xs text-slate-500">Daily risk limit (display)</label>
-          <div className="mt-1 flex items-center gap-2">
-            <select
-              value={dailyMaxMode}
-              onChange={(e) => setDailyMaxMode(e.target.value as "pct" | "usd")}
-              className="rounded-md border px-2 py-1 text-sm"
-              aria-label="Daily risk units"
-            >
-              <option value="pct">%</option>
-              <option value="usd">$</option>
+          <label className="text-xs text-slate-500">Risk budget (enforced)</label>
+          <div className="mt-1 grid grid-cols-3 gap-2">
+            <select value={riskPeriod} onChange={(e) => setRiskPeriod(e.target.value as "daily" | "weekly" | "monthly")} className="rounded-md border px-2 py-1 text-sm" aria-label="Risk period">
+              <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
             </select>
-
-            {dailyMaxMode === "pct" ? (
-              <input
-                type="number" min={0} max={100} step={0.5}
-                value={dailyMaxPct * 100}
-                onChange={(e) => setDailyMaxPct(Number(e.target.value) / 100)}
-                className="w-full rounded-md border px-2 py-1 text-sm"
-              />
+            <select value={periodMode} onChange={(e) => setPeriodMode(e.target.value as "pct" | "usd")} className="rounded-md border px-2 py-1 text-sm" aria-label="Budget units">
+              <option value="pct">%</option><option value="usd">$</option>
+            </select>
+            {periodMode === "pct" ? (
+              <input type="number" min={0} max={100} step={0.5} value={periodLimitPct * 100} onChange={(e) => setPeriodLimitPct(Number(e.target.value) / 100)} className="rounded-md border px-2 py-1 text-sm"/>
             ) : (
-              <input
-                type="number" min={0} step={10}
-                value={dailyMaxUsd}
-                onChange={(e) => setDailyMaxUsd(Number(e.target.value || 0))}
-                className="w-full rounded-md border px-2 py-1 text-sm"
-              />
+              <input type="number" min={0} step={10} value={periodLimitUsd} onChange={(e) => setPeriodLimitUsd(Number(e.target.value || 0))} className="rounded-md border px-2 py-1 text-sm"/>
             )}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500">
-            Daily limit ≈ ${dailyCapDollar} ({dailyPctDisplay}% of bankroll)
+          <div className="mt-1 flex items-center justify-between text-[11px] text-slate-600">
+            <span>Limit ≈ ${periodCapDollar} ({periodPctDisplay}% of bankroll)</span>
+            <button onClick={() => resetRisk(riskPeriod)} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-slate-50">Reset period</button>
           </div>
+          <div className="mt-1 text-[11px] text-slate-600">Used ${periodConsumed} · Remaining ${periodRemaining}</div>
         </div>
       </div>
 
@@ -282,6 +263,17 @@ export default function Home() {
               const kPct = p.kellyAdj > 0 ? `${(p.kellyAdj * 100).toFixed(1)}%` : "—";
               const stakeTxt = p.kellyAdj > 0 ? `$${p.stakeCapped}` : "—";
               const capped = p.kellyAdj > 0 && p.stakeCapped < p.stake;
+
+              const handleAdd = () => {
+                // Enforce period budget on suggested stake for this pick
+                const res = tryConsume(p.stakeCapped, riskPeriod, periodCapDollar);
+                if (!res.ok) {
+                  alert(`Risk budget reached for ${riskPeriod}. Remaining: $${res.remaining}. Adjust the limit or reset the period.`);
+                  return;
+                }
+                addLeg({ id: p.parlayId, label: p.parlayLabel, odds: p.odds });
+              };
+
               return (
                 <tr key={p.id} className="border-t">
                   <td className={"px-3 py-2 font-semibold " + (positive ? "text-green-700" : "text-red-700")}>{formatEV(p.ev)}</td>
@@ -294,7 +286,7 @@ export default function Home() {
                   <td className="px-3 py-2">{p.matchup}</td>
                   <td className="px-3 py-2">{kindLabel}</td>
                   <td className="px-3 py-2">
-                    <button onClick={() => addLeg({ id: p.parlayId, label: p.parlayLabel, odds: p.odds })} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">Add</button>
+                    <button onClick={handleAdd} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">Add</button>
                   </td>
                 </tr>
               );
@@ -304,7 +296,7 @@ export default function Home() {
       </div>
 
       <div className="mt-3 text-xs text-slate-500">
-        Kelly % uses a no-vig fair probability. Stake suggestion is capped by your per-bet limit. Daily limit is informational for now.
+        Adds are blocked once your {riskPeriod} budget is exhausted. Budget applies to suggested stake per pick; per-bet cap still applies.
       </div>
     </section>
   );
