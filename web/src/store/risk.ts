@@ -10,9 +10,7 @@ function dayKey(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 function weekKey(d = new Date()): string {
-  // ISO week number
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  // Thursday in current week decides the year
   const dayNum = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
@@ -32,16 +30,12 @@ function keyFor(period: RiskPeriod, d = new Date()): string {
 }
 
 type RiskState = {
-  periodKey: string;  // last period key used
-  consumed: number;   // dollars consumed within that key
+  periodKey: string;  // key for tracked period (e.g., 2025-09-28 / 2025-W39 / 2025-09)
+  consumed: number;   // dollars consumed in that key
 
-  /** Return consumed for the given period, switching periods resets to 0 (virtual). */
   getConsumed: (period: RiskPeriod) => number;
-
-  /** Try to consume `amount` within `period` against `limit`. Returns {ok, remaining}. */
   tryConsume: (amount: number, period: RiskPeriod, limit: number) => { ok: boolean; remaining: number; key: string };
-
-  /** Reset the tracked consumption for current period type. */
+  refund: (amount: number, period: RiskPeriod, key?: string) => void;
   reset: (period: RiskPeriod) => void;
 };
 
@@ -70,12 +64,23 @@ export const useRisk = create<RiskState>()(
         return { ok: false, remaining, key };
       },
 
+      refund: (amount, period, key) => {
+        const currentKey = keyFor(period);
+        // only refund into the same active period key to avoid cross-period anomalies
+        if (key && key !== currentKey) return;
+        set((s) => {
+          if (s.periodKey !== currentKey) return s;
+          const consumed = Math.max(0, Math.round(s.consumed - Math.max(0, Math.round(amount))));
+          return { ...s, consumed };
+        });
+      },
+
       reset: (period) => set({ periodKey: keyFor(period), consumed: 0 }),
     }),
     {
       name: "risk-v1",
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 2,
       partialize: (s) => ({ periodKey: s.periodKey, consumed: s.consumed }),
     }
   )

@@ -3,6 +3,11 @@ export function americanToDecimal(odds: number): number {
   if (odds === 0) throw new Error("odds cannot be 0");
   return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
 }
+export function decimalToAmerican(decimal: number): number {
+  if (decimal <= 1) throw new Error("decimal <= 1 not valid");
+  const b = decimal - 1;
+  return decimal >= 2 ? Math.round(b * 100) : Math.round(-100 / b);
+}
 export function americanToImpliedProb(odds: number): number {
   if (odds > 0) return 100 / (odds + 100);
   return Math.abs(odds) / (Math.abs(odds) + 100);
@@ -17,7 +22,6 @@ export function formatEV(v: number): string {
   const s = Math.round(v);
   return (s >= 0 ? "+" : "") + "$" + Math.abs(s);
 }
-
 /** Kelly fraction (full Kelly). Returns a fraction of bankroll (can be negative). */
 export function kellyFraction(odds: number, fairProb: number): number {
   const b = americanToDecimal(odds) - 1; // net payout multiple

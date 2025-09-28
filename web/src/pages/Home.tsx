@@ -4,7 +4,7 @@ import { fetchFeatured, type FeaturedPick } from "../services/ev/featured";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
 import { useRisk } from "../store/risk";
-import { americanToDecimal, formatEV, kellyFraction } from "../services/ev/math";
+import { americanToDecimal, decimalToAmerican, formatEV, kellyFraction } from "../services/ev/math";
 
 type LeagueFilter = "all" | "nfl" | "ncaaf";
 type KindFilter = "all" | "ml" | "spread" | "total" | "prop";
@@ -18,6 +18,9 @@ function fmtOdds(odds: number, format: "american" | "decimal") {
 
 export default function Home() {
   const addLeg = useParlay((s) => s.addLeg);
+  const legs = useParlay((s) => s.legs);
+  const clearParlay = useParlay((s) => s.clear);
+
   const {
     oddsFormat,
     bankroll, kelly,
@@ -74,14 +77,15 @@ export default function Home() {
     return rows;
   }, [data, league, kind, position, propQuery]);
 
-  // Caps
+  // Caps & period
   const perBetCapDollar = Math.round(maxPerBetMode === "pct" ? bankroll * maxPerBetPct : maxPerBetUsd);
   const periodCapDollar  = Math.round(periodMode === "pct" ? bankroll * periodLimitPct : periodLimitUsd);
-
   const periodConsumed = getConsumed(riskPeriod);
   const periodRemaining = Math.max(0, Math.round(periodCapDollar - periodConsumed));
   const capPctDisplay = bankroll > 0 ? ((perBetCapDollar / bankroll) * 100).toFixed(2) : "0.00";
   const periodPctDisplay = bankroll > 0 ? ((periodCapDollar / bankroll) * 100).toFixed(2) : "0.00";
+  const periodUsedPct = periodCapDollar > 0 ? Math.min(100, Math.round((periodConsumed / periodCapDollar) * 100)) : 0;
+  const lowBudget = periodCapDollar > 0 && (periodCapDollar - periodConsumed) / periodCapDollar < 0.1;
 
   // Build rows with Kelly + stake + per-bet cap
   const rows = useMemo(() => {
@@ -99,6 +103,19 @@ export default function Home() {
     return mapped;
   }, [filtered, bankroll, kelly, perBetCapDollar, sortKey, sortDir]);
 
+  // Parlay summary (combined odds + Kelly suggestion)
+  const parlay = useMemo(() => {
+    const dec = legs.reduce((acc, l) => acc * americanToDecimal(l.odds), 1);
+    const american = dec > 1 ? decimalToAmerican(dec) : 0;
+    const allHaveFair = legs.length > 0 && legs.every((l) => typeof l.fairProb === "number");
+    const fairProb = allHaveFair ? legs.reduce((acc, l) => acc * (l.fairProb as number), 1) : undefined;
+    const f = fairProb != null ? kellyFraction(american, fairProb) : 0;
+    const kAdj = Math.max(0, f * kelly);
+    const stake = Math.round(bankroll * kAdj);
+    const stakeCapped = Math.min(stake, perBetCapDollar, periodRemaining);
+    return { dec, american, fairProb, f, kAdj, stake, stakeCapped, count: legs.length };
+  }, [legs, bankroll, kelly, perBetCapDollar, periodRemaining]);
+
   return (
     <section className="mx-auto max-w-5xl">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -108,7 +125,7 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           {secondsAgo !== null && (
-            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-700">
+            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-700" title="Auto-refresh every 60s">
               {isFetching ? "Refreshing…" : `Updated ${secondsAgo}s ago`}
             </span>
           )}
@@ -165,20 +182,14 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Row 2: Per-bet cap + Period budget (enforced) */}
+      {/* Row 2: Per-bet cap + Period budget (enforced) with progress */}
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         {/* Max per bet */}
         <div>
           <label className="text-xs text-slate-500">Max per bet</label>
           <div className="mt-1 flex items-center gap-2">
-            <select
-              value={maxPerBetMode}
-              onChange={(e) => setMaxPerBetMode(e.target.value as "pct" | "usd")}
-              className="rounded-md border px-2 py-1 text-sm"
-              aria-label="Max per bet units"
-            >
-              <option value="pct">%</option>
-              <option value="usd">$</option>
+            <select value={maxPerBetMode} onChange={(e) => setMaxPerBetMode(e.target.value as "pct" | "usd")} className="rounded-md border px-2 py-1 text-sm" aria-label="Max per bet units">
+              <option value="pct">%</option><option value="usd">$</option>
             </select>
             {maxPerBetMode === "pct" ? (
               <input type="number" min={0} max={100} step={0.25} value={maxPerBetPct * 100} onChange={(e) => setMaxPerBetPct(Number(e.target.value) / 100)} className="w-full rounded-md border px-2 py-1 text-sm"/>
@@ -186,7 +197,9 @@ export default function Home() {
               <input type="number" min={0} step={10} value={maxPerBetUsd} onChange={(e) => setMaxPerBetUsd(Number(e.target.value || 0))} className="w-full rounded-md border px-2 py-1 text-sm"/>
             )}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500">Per-bet cap ≈ ${perBetCapDollar} ({capPctDisplay}% of bankroll)</div>
+          <div className="mt-1 text-[11px] text-slate-500" title="We cap suggested stakes by this amount">
+            Per-bet cap ≈ ${perBetCapDollar} ({capPctDisplay}% of bankroll)
+          </div>
         </div>
 
         {/* Period budget */}
@@ -205,11 +218,55 @@ export default function Home() {
               <input type="number" min={0} step={10} value={periodLimitUsd} onChange={(e) => setPeriodLimitUsd(Number(e.target.value || 0))} className="rounded-md border px-2 py-1 text-sm"/>
             )}
           </div>
-          <div className="mt-1 flex items-center justify-between text-[11px] text-slate-600">
-            <span>Limit ≈ ${periodCapDollar} ({periodPctDisplay}% of bankroll)</span>
-            <button onClick={() => resetRisk(riskPeriod)} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-slate-50">Reset period</button>
+
+          {/* Progress */}
+          <div className="mt-2">
+            <div className="h-2 w-full overflow-hidden rounded bg-slate-100" title={`${periodUsedPct}% used`}>
+              <div className="h-full bg-blue-600" style={{ width: `${periodUsedPct}%` }} />
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-600">
+              <span>Limit ≈ ${periodCapDollar} ({periodPctDisplay}% of bankroll)</span>
+              <button onClick={() => resetRisk(riskPeriod)} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-slate-50">Reset period</button>
+            </div>
+            <div className="mt-1 text-[11px] text-slate-600">Used ${periodConsumed} · Remaining ${periodRemaining}</div>
+            {lowBudget && (
+              <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-900 border border-amber-200" title="You’re close to your budget">
+                Heads up: <strong>{riskPeriod}</strong> budget is under 10% remaining.
+              </div>
+            )}
           </div>
-          <div className="mt-1 text-[11px] text-slate-600">Used ${periodConsumed} · Remaining ${periodRemaining}</div>
+        </div>
+      </div>
+
+      {/* Parlay summary (Kelly for combined odds) */}
+      <div className="mt-4 rounded-xl border bg-white p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm text-slate-500">Parlay</div>
+            <div className="text-lg font-semibold">{legs.length} leg{legs.length === 1 ? "" : "s"}</div>
+          </div>
+          <button onClick={clearParlay} className="rounded-md border px-3 py-1.5 text-xs hover:bg-slate-50" title="Also refunds reserved budget for current period">
+            Clear
+          </button>
+        </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <div>
+            <div className="text-xs text-slate-500">Combined odds</div>
+            <div className="mt-1 text-sm">
+              {legs.length ? `${parlay.american > 0 ? `+${parlay.american}` : parlay.american} (dec ${parlay.dec.toFixed(2)})` : "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Fair probability</div>
+            <div className="mt-1 text-sm">{parlay.fairProb != null ? `${(parlay.fairProb * 100).toFixed(2)}%` : "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500" title="Full Kelly × your Kelly multiplier; limited by per-bet cap and remaining budget">Kelly suggestion</div>
+            <div className="mt-1 text-sm">
+              {parlay.kAdj > 0 ? `${(parlay.kAdj * 100).toFixed(1)}% · $${parlay.stakeCapped}` : "—"}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -265,13 +322,20 @@ export default function Home() {
               const capped = p.kellyAdj > 0 && p.stakeCapped < p.stake;
 
               const handleAdd = () => {
-                // Enforce period budget on suggested stake for this pick
+                // enforce period budget; record consumed + key for release later
                 const res = tryConsume(p.stakeCapped, riskPeriod, periodCapDollar);
                 if (!res.ok) {
                   alert(`Risk budget reached for ${riskPeriod}. Remaining: $${res.remaining}. Adjust the limit or reset the period.`);
                   return;
                 }
-                addLeg({ id: p.parlayId, label: p.parlayLabel, odds: p.odds });
+                addLeg({
+                  id: p.parlayId,
+                  label: p.parlayLabel,
+                  odds: p.odds,
+                  fairProb: p.fairProb,
+                  riskConsumed: p.stakeCapped,
+                  riskKey: res.key,
+                });
               };
 
               return (
@@ -296,7 +360,7 @@ export default function Home() {
       </div>
 
       <div className="mt-3 text-xs text-slate-500">
-        Adds are blocked once your {riskPeriod} budget is exhausted. Budget applies to suggested stake per pick; per-bet cap still applies.
+        Adds are blocked once your {riskPeriod} budget is exhausted. Removing legs or clearing the parlay releases reserved budget for the current period.
       </div>
     </section>
   );
