@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { fetchGame, type GameDetails } from "../services/odds/draftkings";
 import { useParlay } from "../store/parlay";
-import { americanToImpliedProb, evSingle, formatEV } from "../services/ev/math";
+import { useSettings } from "../store/settings";
+import { americanToImpliedProb, evSingle, formatEV, americanToDecimal } from "../services/ev/math";
 
 type Props = {
   id: string;
@@ -15,9 +16,13 @@ type Props = {
 function signed(n: number) {
   return `${n >= 0 ? "+" : ""}${n}`;
 }
+function fmtOdds(odds: number, format: "american" | "decimal") {
+  return format === "american" ? (odds > 0 ? `+${odds}` : `${odds}`) : americanToDecimal(odds).toFixed(2);
+}
 
 export default function GameCard({ id, home, away, startsAt }: Props) {
   const addLeg = useParlay((s) => s.addLeg);
+  const { oddsFormat } = useSettings();
 
   // Pull the lines for this game card, auto-refresh every 15s
   const { data, isLoading, isError, isFetching, dataUpdatedAt } = useQuery<GameDetails>({
@@ -119,25 +124,25 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
                 onClick={() =>
                   addLeg({
                     id: `${id}:ML:AWAY`,
-                    label: `${away} ML ${ml.awayOdds}`,
+                    label: `${away} ML ${fmtOdds(ml.awayOdds, oddsFormat)}`,
                     odds: ml.awayOdds,
                   })
                 }
                 className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
-                {away} {ml.awayOdds}
+                {away} {fmtOdds(ml.awayOdds, oddsFormat)}
               </button>
               <button
                 onClick={() =>
                   addLeg({
                     id: `${id}:ML:HOME`,
-                    label: `${home} ML ${ml.homeOdds}`,
+                    label: `${home} ML ${fmtOdds(ml.homeOdds, oddsFormat)}`,
                     odds: ml.homeOdds,
                   })
                 }
                 className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
-                {home} {ml.homeOdds}
+                {home} {fmtOdds(ml.homeOdds, oddsFormat)}
               </button>
             </>
           )}
@@ -153,25 +158,25 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
                 onClick={() =>
                   addLeg({
                     id: `${id}:SPREAD:AWAY:${sp.away}`,
-                    label: `${away} ${signed(sp.away)} (${sp.awayOdds})`,
+                    label: `${away} ${signed(sp.away)} (${fmtOdds(sp.awayOdds, oddsFormat)})`,
                     odds: sp.awayOdds,
                   })
                 }
                 className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
               >
-                {away} {signed(sp.away)} ({sp.awayOdds})
+                {away} {signed(sp.away)} ({fmtOdds(sp.awayOdds, oddsFormat)})
               </button>
               <button
                 onClick={() =>
                   addLeg({
                     id: `${id}:SPREAD:HOME:${sp.home}`,
-                    label: `${home} ${signed(sp.home)} (${sp.homeOdds})`,
+                    label: `${home} ${signed(sp.home)} (${fmtOdds(sp.homeOdds, oddsFormat)})`,
                     odds: sp.homeOdds,
                   })
                 }
                 className="rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-purple-700"
               >
-                {home} {signed(sp.home)} ({sp.homeOdds})
+                {home} {signed(sp.home)} ({fmtOdds(sp.homeOdds, oddsFormat)})
               </button>
             </>
           )}
@@ -188,25 +193,25 @@ export default function GameCard({ id, home, away, startsAt }: Props) {
                 onClick={() =>
                   addLeg({
                     id: `${id}:TOTAL:OVER:${tot.line}`,
-                    label: `Over ${tot.line} (${tot.overOdds})`,
+                    label: `Over ${tot.line} (${fmtOdds(tot.overOdds, oddsFormat)})`,
                     odds: tot.overOdds,
                   })
                 }
                 className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
               >
-                Over {tot.line} ({tot.overOdds})
+                Over {tot.line} ({fmtOdds(tot.overOdds, oddsFormat)})
               </button>
               <button
                 onClick={() =>
                   addLeg({
                     id: `${id}:TOTAL:UNDER:${tot.line}`,
-                    label: `Under ${tot.line} (${tot.underOdds})`,
+                    label: `Under ${tot.line} (${fmtOdds(tot.underOdds, oddsFormat)})`,
                     odds: tot.underOdds,
                   })
                 }
                 className="rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
               >
-                Under {tot.line} ({tot.underOdds})
+                Under {tot.line} ({fmtOdds(tot.underOdds, oddsFormat)})
               </button>
             </>
           )}

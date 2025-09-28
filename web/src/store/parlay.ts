@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 // --- Odds helpers ---
 function americanToDecimal(odds: number): number {
@@ -42,15 +43,27 @@ export function parlayReturn(legs: ParlayLeg[], stake: number): number {
   return stake * dec; // stake + profit
 }
 
-export const useParlay = create<ParlayState>((set, get) => ({
-  legs: [],
-  stake: 100,
-  addLeg: (leg) => {
-    const exists = get().legs.some((l) => l.id === leg.id);
-    if (exists) return; // prevent duplicates
-    set({ legs: [...get().legs, leg] });
-  },
-  removeLeg: (id) => set({ legs: get().legs.filter((l) => l.id !== id) }),
-  clear: () => set({ legs: [] }),
-  setStake: (v) => set({ stake: Math.max(1, Math.round(v)) }),
-}));
+export const useParlay = create<ParlayState>()(
+  persist(
+    (set, get) => ({
+      legs: [],
+      stake: 100,
+      addLeg: (leg) => {
+        const exists = get().legs.some((l) => l.id === leg.id);
+        if (exists) return; // prevent duplicates
+        set({ legs: [...get().legs, leg] });
+      },
+      removeLeg: (id) => set({ legs: get().legs.filter((l) => l.id !== id) }),
+      clear: () => set({ legs: [] }),
+      setStake: (v) => set({ stake: Math.max(1, Math.round(v)) }),
+    }),
+    {
+      name: "parlay-v1",
+      storage: createJSONStorage(() => localStorage),
+      // Only persist what's needed
+      partialize: (s) => ({ legs: s.legs, stake: s.stake }),
+      version: 1,
+      migrate: (persisted, _version) => persisted as any,
+    }
+  )
+);
