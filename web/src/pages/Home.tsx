@@ -4,6 +4,7 @@ import { fetchFeatured, type FeaturedPick } from "../services/ev/featured";
 import { useParlay } from "../store/parlay";
 import { useSettings } from "../store/settings";
 import { useRisk } from "../store/risk";
+import { useHistory } from "../store/history";
 import { americanToDecimal, decimalToAmerican, formatEV, kellyFraction } from "../services/ev/math";
 
 type LeagueFilter = "all" | "nfl" | "ncaaf";
@@ -15,11 +16,22 @@ type SortDir = "asc" | "desc";
 function fmtOdds(odds: number, format: "american" | "decimal") {
   return format === "american" ? (odds > 0 ? `+${odds}` : `${odds}`) : americanToDecimal(odds).toFixed(2);
 }
+function download(filename: string, text: string) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url; link.setAttribute("download", filename);
+  document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
 
 export default function Home() {
-  const addLeg = useParlay((s) => s.addLeg);
   const legs = useParlay((s) => s.legs);
+  const addLeg = useParlay((s) => s.addLeg);
   const clearParlay = useParlay((s) => s.clear);
+  const placeParlay = useParlay((s) => s.placeParlay);
+
+  const events = useHistory((s) => s.events);
 
   const {
     oddsFormat,
@@ -35,6 +47,7 @@ export default function Home() {
   } = useSettings();
 
   const getConsumed = useRisk((s) => s.getConsumed);
+  const getRealized = useRisk((s) => s.getRealized);
   const tryConsume = useRisk((s) => s.tryConsume);
   const resetRisk = useRisk((s) => s.reset);
 
@@ -81,6 +94,7 @@ export default function Home() {
   const perBetCapDollar = Math.round(maxPerBetMode === "pct" ? bankroll * maxPerBetPct : maxPerBetUsd);
   const periodCapDollar  = Math.round(periodMode === "pct" ? bankroll * periodLimitPct : periodLimitUsd);
   const periodConsumed = getConsumed(riskPeriod);
+  const periodRealized = getRealized(riskPeriod);
   const periodRemaining = Math.max(0, Math.round(periodCapDollar - periodConsumed));
   const capPctDisplay = bankroll > 0 ? ((perBetCapDollar / bankroll) * 100).toFixed(2) : "0.00";
   const periodPctDisplay = bankroll > 0 ? ((periodCapDollar / bankroll) * 100).toFixed(2) : "0.00";
@@ -107,14 +121,42 @@ export default function Home() {
   const parlay = useMemo(() => {
     const dec = legs.reduce((acc, l) => acc * americanToDecimal(l.odds), 1);
     const american = dec > 1 ? decimalToAmerican(dec) : 0;
-    const allHaveFair = legs.length > 0 && legs.every((l) => typeof l.fairProb === "number");
-    const fairProb = allHaveFair ? legs.reduce((acc, l) => acc * (l.fairProb as number), 1) : undefined;
+    const allFair = legs.length > 0 && legs.every((l) => typeof l.fairProb === "number");
+    const fairProb = allFair ? legs.reduce((acc, l) => acc * (l.fairProb as number), 1) : undefined;
     const f = fairProb != null ? kellyFraction(american, fairProb) : 0;
     const kAdj = Math.max(0, f * kelly);
     const stake = Math.round(bankroll * kAdj);
     const stakeCapped = Math.min(stake, perBetCapDollar, periodRemaining);
     return { dec, american, fairProb, f, kAdj, stake, stakeCapped, count: legs.length };
   }, [legs, bankroll, kelly, perBetCapDollar, periodRemaining]);
+
+  // CSV exports
+  const exportFeaturedCsv = () => {
+    const header = ["ev_$", "odds", "kelly_pct", "stake_$", "label", "matchup", "type"].join(",");
+    const lines = rows.map((p) =>
+      [
+        Math.round(p.ev),
+        p.odds,
+        (p.kellyAdj * 100).toFixed(2),
+        p.stakeCapped,
+        `"${(p.label ?? "").replace(/"/g, '""')}"`,
+        `"${(p.matchup ?? "").replace(/"/g, '""')}"`,
+        p.kind
+      ].join(",")
+    );
+    download(`featured_${Date.now()}.csv`, [header, ...lines].join("\n"));
+  };
+
+  const exportHistoryCsv = () => {
+    const header = ["ts", "type", "label", "amount", "odds", "legs"].join(",");
+    const lines = events.map((e) => {
+      if (e.type === "add") return [e.ts, e.type, `"${e.label.replace(/"/g,'""')}"`, e.reserved, e.odds, ""].join(",");
+      if (e.type === "remove") return [e.ts, e.type, `"${e.label.replace(/"/g,'""')}"`, e.refund, e.odds, ""].join(",");
+      if (e.type === "clear") return [e.ts, e.type, `""`, e.refund, "", e.count].join(",");
+      return [e.ts, e.type, `"${e.labels.join(" / ").replace(/"/g,'""')}"`, e.stake, e.american, e.legs].join(",");
+    });
+    download(`history_${Date.now()}.csv`, [header, ...lines].join("\n"));
+  };
 
   return (
     <section className="mx-auto max-w-5xl">
@@ -132,6 +174,7 @@ export default function Home() {
           <button onClick={() => refetch()} className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800">
             Refresh
           </button>
+          <button onClick={exportFeaturedCsv} className="rounded-md border px-3 py-1.5 text-xs hover:bg-slate-50">Export CSV</button>
         </div>
       </div>
 
@@ -228,7 +271,7 @@ export default function Home() {
               <span>Limit ≈ ${periodCapDollar} ({periodPctDisplay}% of bankroll)</span>
               <button onClick={() => resetRisk(riskPeriod)} className="rounded-md border px-2 py-0.5 text-[11px] hover:bg-slate-50">Reset period</button>
             </div>
-            <div className="mt-1 text-[11px] text-slate-600">Used ${periodConsumed} · Remaining ${periodRemaining}</div>
+            <div className="mt-1 text-[11px] text-slate-600">Used ${periodConsumed} · Placed ${periodRealized} · Remaining ${periodRemaining}</div>
             {lowBudget && (
               <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-900 border border-amber-200" title="You’re close to your budget">
                 Heads up: <strong>{riskPeriod}</strong> budget is under 10% remaining.
@@ -245,9 +288,23 @@ export default function Home() {
             <div className="text-sm text-slate-500">Parlay</div>
             <div className="text-lg font-semibold">{legs.length} leg{legs.length === 1 ? "" : "s"}</div>
           </div>
-          <button onClick={clearParlay} className="rounded-md border px-3 py-1.5 text-xs hover:bg-slate-50" title="Also refunds reserved budget for current period">
-            Clear
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => clearParlay(true)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-slate-50" title="Refunds reserved budget for this period">
+              Clear
+            </button>
+            <button
+              onClick={() => {
+                if (!legs.length) { alert("Add legs first"); return; }
+                if (parlay.stakeCapped <= 0) { alert("No budget or Kelly suggests $0"); return; }
+                const res = placeParlay(parlay.stakeCapped, parlay.american);
+                if (!res.ok) alert(res.reason || "Could not place parlay");
+              }}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+              title="Converts reservations to a single placed stake; does NOT refund"
+            >
+              Place (${parlay.stakeCapped})
+            </button>
+          </div>
         </div>
 
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -322,7 +379,6 @@ export default function Home() {
               const capped = p.kellyAdj > 0 && p.stakeCapped < p.stake;
 
               const handleAdd = () => {
-                // enforce period budget; record consumed + key for release later
                 const res = tryConsume(p.stakeCapped, riskPeriod, periodCapDollar);
                 if (!res.ok) {
                   alert(`Risk budget reached for ${riskPeriod}. Remaining: $${res.remaining}. Adjust the limit or reset the period.`);
@@ -359,8 +415,31 @@ export default function Home() {
         </table>
       </div>
 
+      {/* History (recent) */}
+      <div className="mt-4 rounded-xl border bg-white p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm text-slate-500">Activity</div>
+            <div className="text-lg font-semibold">Recent (last 20)</div>
+          </div>
+          <button onClick={exportHistoryCsv} className="rounded-md border px-3 py-1.5 text-xs hover:bg-slate-50">Export History CSV</button>
+        </div>
+        <ul className="mt-2 space-y-1 text-sm">
+          {events.slice(0, 20).map((e, i) => (
+            <li key={i} className="text-slate-700">
+              {new Date(e.ts).toLocaleString()} —{" "}
+              {e.type === "add" && <>Added <span className="font-medium">{e.label}</span> (reserved ${e.reserved})</>}
+              {e.type === "remove" && <>Removed <span className="font-medium">{e.label}</span> (refund ${e.refund})</>}
+              {e.type === "clear" && <>Cleared parlay (legs {e.count}, refund ${e.refund})</>}
+              {e.type === "place" && <>Placed parlay ${e.stake} @ {e.american > 0 ? `+${e.american}` : e.american} ({e.legs} legs)</>}
+            </li>
+          ))}
+          {events.length === 0 && <li className="text-slate-500">No activity yet.</li>}
+        </ul>
+      </div>
+
       <div className="mt-3 text-xs text-slate-500">
-        Adds are blocked once your {riskPeriod} budget is exhausted. Removing legs or clearing the parlay releases reserved budget for the current period.
+        Adds are blocked once your {riskPeriod} budget is exhausted. Removing legs or clearing the parlay releases reserved budget for the current period. “Place” converts reservations into a single realized stake and keeps the budget enforced.
       </div>
     </section>
   );
